@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { CATEGORIES, type PostFields } from "./post-form";
 
@@ -24,6 +24,29 @@ interface CreateMonitor {
   ): void;
 }
 
+// 入力／出力で扱えるモダリティ。
+type Modality = "text" | "image" | "audio";
+
+interface ExpectedModality {
+  type: Modality;
+  // text モダリティでのみ意味を持つ言語ヒント。
+  languages?: string[];
+}
+
+// マルチモーダル入力。画像・音声は Blob をそのまま value に渡せる。
+interface MessageContent {
+  type: Modality;
+  value: string | Blob;
+}
+
+interface PromptMessage {
+  role: "system" | "user" | "assistant";
+  content: MessageContent[];
+}
+
+// prompt() はプレーン文字列、またはメッセージ配列を受け付ける。
+type PromptInput = string | PromptMessage[];
+
 interface PromptOptions {
   signal?: AbortSignal;
   // JSON Schema を渡すと出力をその構造に拘束できる（structured output）。
@@ -31,18 +54,28 @@ interface PromptOptions {
 }
 
 interface LanguageModelSession {
-  prompt(input: string, options?: PromptOptions): Promise<string>;
-  promptStreaming(input: string, options?: PromptOptions): AsyncIterable<string>;
+  prompt(input: PromptInput, options?: PromptOptions): Promise<string>;
+  promptStreaming(
+    input: PromptInput,
+    options?: PromptOptions,
+  ): AsyncIterable<string>;
   destroy(): void;
 }
 
-interface LanguageModelCreateOptions {
+// create()／availability() に渡す共通オプション。
+// 画像・音声を使う場合は expectedInputs で宣言する必要がある。
+interface LanguageModelOptions {
+  expectedInputs?: ExpectedModality[];
+  expectedOutputs?: ExpectedModality[];
+}
+
+interface LanguageModelCreateOptions extends LanguageModelOptions {
   monitor?: (monitor: CreateMonitor) => void;
   signal?: AbortSignal;
 }
 
 interface LanguageModelStatic {
-  availability(): Promise<Availability>;
+  availability(options?: LanguageModelOptions): Promise<Availability>;
   create(options?: LanguageModelCreateOptions): Promise<LanguageModelSession>;
 }
 
@@ -147,9 +180,16 @@ export default function PromptPlayground({
   const [error, setError] = useState<string | null>(null);
   // 投稿フォームへ反映するモード（onApplyToForm がある場合のみ既定で ON）。
   const [applyToForm, setApplyToForm] = useState(Boolean(onApplyToForm));
+  // 添付する画像・音声（任意）。
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [audioFile, setAudioFile] = useState<File | null>(null);
 
   const sessionRef = useRef<LanguageModelSession | null>(null);
+  // 現在のセッションが宣言しているモダリティの集合（再生成判定に使う）。
+  const sessionModalitiesRef = useRef<string>("");
   const abortRef = useRef<AbortController | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const audioInputRef = useRef<HTMLInputElement | null>(null);
 
   // 初回マウント時に利用可否を確認する。
   useEffect(() => {
@@ -183,23 +223,66 @@ export default function PromptPlayground({
     };
   }, []);
 
-  // セッションを（必要ならダウンロードしつつ）生成する。
-  const ensureSession = useCallback(async () => {
-    if (sessionRef.current) return sessionRef.current;
-    if (typeof LanguageModel === "undefined") {
-      throw new Error("Prompt API に対応していません。");
-    }
+  // 選択中ファイルのプレビュー URL を導出し、変更・アンマウント時に解放する。
+  const imagePreview = useMemo(
+    () => (imageFile ? URL.createObjectURL(imageFile) : null),
+    [imageFile],
+  );
+  useEffect(() => {
+    if (!imagePreview) return;
+    return () => URL.revokeObjectURL(imagePreview);
+  }, [imagePreview]);
 
-    const session = await LanguageModel.create({
-      monitor(monitor) {
-        monitor.addEventListener("downloadprogress", (event) => {
-          setDownloadProgress(event.loaded);
-        });
-      },
-    });
-    sessionRef.current = session;
-    return session;
-  }, []);
+  const audioPreview = useMemo(
+    () => (audioFile ? URL.createObjectURL(audioFile) : null),
+    [audioFile],
+  );
+  useEffect(() => {
+    if (!audioPreview) return;
+    return () => URL.revokeObjectURL(audioPreview);
+  }, [audioPreview]);
+
+  // 添付内容に応じて宣言すべき expectedInputs を組み立てる。
+  const buildExpectedInputs = useCallback(
+    (modalities: Modality[]): ExpectedModality[] =>
+      modalities.map((type) => (type === "text" ? { type, languages: ["ja"] } : { type })),
+    [],
+  );
+
+  // セッションを（必要ならダウンロードしつつ）生成する。
+  // 要求するモダリティが現在のセッションでまかなえない場合は作り直す。
+  const ensureSession = useCallback(
+    async (modalities: Modality[]) => {
+      if (typeof LanguageModel === "undefined") {
+        throw new Error("Prompt API に対応していません。");
+      }
+
+      // text は常に含める。重複を除いて安定したキーにする。
+      const required = Array.from(new Set<Modality>(["text", ...modalities]));
+      const key = [...required].sort().join(",");
+
+      if (sessionRef.current && sessionModalitiesRef.current === key) {
+        return sessionRef.current;
+      }
+
+      // モダリティが変わったら既存セッションを破棄して作り直す。
+      sessionRef.current?.destroy();
+      sessionRef.current = null;
+
+      const session = await LanguageModel.create({
+        expectedInputs: buildExpectedInputs(required),
+        monitor(monitor) {
+          monitor.addEventListener("downloadprogress", (event) => {
+            setDownloadProgress(event.loaded);
+          });
+        },
+      });
+      sessionRef.current = session;
+      sessionModalitiesRef.current = key;
+      return session;
+    },
+    [buildExpectedInputs],
+  );
 
   // ダウンロードボタン押下時の処理。create() がモデルのダウンロードを開始する。
   const handleDownload = useCallback(async () => {
@@ -208,7 +291,7 @@ export default function PromptPlayground({
     setStatus("downloading");
     setDownloadProgress(0);
     try {
-      await ensureSession();
+      await ensureSession([]);
       setStatus("available");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -227,7 +310,9 @@ export default function PromptPlayground({
     async (event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault();
       const text = input.trim();
-      if (!text || isGenerating) return;
+      // テキストが空でも、画像・音声があれば送信できる。
+      const hasMedia = Boolean(imageFile || audioFile);
+      if ((!text && !hasMedia) || isGenerating) return;
 
       setError(null);
       setOutput("");
@@ -237,12 +322,28 @@ export default function PromptPlayground({
       abortRef.current = controller;
 
       try {
-        const session = await ensureSession();
+        // 添付に応じて必要なモダリティでセッションを用意する。
+        const modalities: Modality[] = [];
+        if (imageFile) modalities.push("image");
+        if (audioFile) modalities.push("audio");
+        const session = await ensureSession(modalities);
         setStatus("available");
+
+        // user メッセージの content を組み立てるヘルパー。
+        const buildContent = (promptText: string): MessageContent[] => {
+          const content: MessageContent[] = [];
+          if (promptText) content.push({ type: "text", value: promptText });
+          if (imageFile) content.push({ type: "image", value: imageFile });
+          if (audioFile) content.push({ type: "audio", value: audioFile });
+          return content;
+        };
 
         if (applyToForm && onApplyToForm) {
           // structured output で投稿フォームの各項目を生成して反映する。
-          const json = await session.prompt(buildPostPrompt(text), {
+          const messages: PromptMessage[] = [
+            { role: "user", content: buildContent(buildPostPrompt(text)) },
+          ];
+          const json = await session.prompt(messages, {
             signal: controller.signal,
             responseConstraint: POST_SCHEMA,
           });
@@ -251,7 +352,11 @@ export default function PromptPlayground({
           setOutput(JSON.stringify(parsed, null, 2));
         } else {
           // 通常モード: ストリーミングで逐次表示する。
-          const stream = session.promptStreaming(text, {
+          // 添付がなければ従来どおり文字列を渡す。
+          const promptInput: PromptInput = hasMedia
+            ? [{ role: "user", content: buildContent(text) }]
+            : text;
+          const stream = session.promptStreaming(promptInput, {
             signal: controller.signal,
           });
           for await (const chunk of stream) {
@@ -269,7 +374,15 @@ export default function PromptPlayground({
         abortRef.current = null;
       }
     },
-    [applyToForm, ensureSession, input, isGenerating, onApplyToForm],
+    [
+      applyToForm,
+      audioFile,
+      ensureSession,
+      imageFile,
+      input,
+      isGenerating,
+      onApplyToForm,
+    ],
   );
 
   const handleStop = useCallback(() => {
@@ -351,6 +464,90 @@ export default function PromptPlayground({
           />
         </div>
 
+        {/* 画像・音声の添付（任意・マルチモーダル入力） */}
+        <div className="grid gap-4 sm:grid-cols-2">
+          {/* 画像 */}
+          <div className="flex flex-col gap-2">
+            <label htmlFor="image" className={labelClass}>
+              画像（任意）
+            </label>
+            <input
+              ref={imageInputRef}
+              id="image"
+              type="file"
+              accept="image/*"
+              disabled={!canPrompt || isGenerating}
+              onChange={(event) => setImageFile(event.target.files?.[0] ?? null)}
+              className="block w-full text-sm text-zinc-700 file:mr-3 file:rounded-full file:border-0 file:bg-zinc-900 file:px-4 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50 dark:text-zinc-300 dark:file:bg-zinc-50 dark:file:text-zinc-900 dark:hover:file:bg-zinc-200"
+            />
+            {imageFile && (
+              <div className="flex items-center gap-3">
+                {imagePreview && (
+                  // eslint-disable-next-line @next/next/no-img-element -- ローカル Blob のプレビューのため next/image は使わない
+                  <img
+                    src={imagePreview}
+                    alt="添付画像のプレビュー"
+                    className="h-14 w-14 rounded-md border border-zinc-200 object-cover dark:border-zinc-800"
+                  />
+                )}
+                <span className="flex-1 truncate text-xs text-zinc-500 dark:text-zinc-400">
+                  {imageFile.name}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setImageFile(null);
+                    if (imageInputRef.current) imageInputRef.current.value = "";
+                  }}
+                  disabled={isGenerating}
+                  className="text-xs text-zinc-500 underline underline-offset-2 hover:text-zinc-700 disabled:opacity-50 dark:text-zinc-400 dark:hover:text-zinc-200"
+                >
+                  削除
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* 音声 */}
+          <div className="flex flex-col gap-2">
+            <label htmlFor="audio" className={labelClass}>
+              音声（任意）
+            </label>
+            <input
+              ref={audioInputRef}
+              id="audio"
+              type="file"
+              accept="audio/*"
+              disabled={!canPrompt || isGenerating}
+              onChange={(event) => setAudioFile(event.target.files?.[0] ?? null)}
+              className="block w-full text-sm text-zinc-700 file:mr-3 file:rounded-full file:border-0 file:bg-zinc-900 file:px-4 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50 dark:text-zinc-300 dark:file:bg-zinc-50 dark:file:text-zinc-900 dark:hover:file:bg-zinc-200"
+            />
+            {audioFile && (
+              <div className="flex flex-col gap-2">
+                {audioPreview && (
+                  <audio src={audioPreview} controls className="w-full" />
+                )}
+                <div className="flex items-center gap-3">
+                  <span className="flex-1 truncate text-xs text-zinc-500 dark:text-zinc-400">
+                    {audioFile.name}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAudioFile(null);
+                      if (audioInputRef.current) audioInputRef.current.value = "";
+                    }}
+                    disabled={isGenerating}
+                    className="text-xs text-zinc-500 underline underline-offset-2 hover:text-zinc-700 disabled:opacity-50 dark:text-zinc-400 dark:hover:text-zinc-200"
+                  >
+                    削除
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
         {/* 投稿フォームへの反映トグル */}
         {onApplyToForm && (
           <label className="flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300">
@@ -368,7 +565,11 @@ export default function PromptPlayground({
         <div className="flex items-center gap-3">
           <button
             type="submit"
-            disabled={!canPrompt || isGenerating || !input.trim()}
+            disabled={
+              !canPrompt ||
+              isGenerating ||
+              (!input.trim() && !imageFile && !audioFile)
+            }
             className={primaryButtonClass}
           >
             {isGenerating ? "生成中…" : "送信する"}
@@ -403,6 +604,20 @@ export default function PromptPlayground({
           </div>
         </div>
       )}
+
+      {/* デバッグ用リンク。オンデバイスモデルの状態やダウンロード状況を確認できる。
+          Chrome は Web ページから chrome:// への直接遷移をブロックするため、
+          クリックで開かない場合はアドレスバーへコピーして開く。 */}
+      <p className="text-xs text-zinc-500 dark:text-zinc-400">
+        デバッグ:{" "}
+        <a
+          href="chrome://on-device-internals/"
+          className="font-mono underline underline-offset-2 hover:text-zinc-700 dark:hover:text-zinc-200"
+        >
+          chrome://on-device-internals/
+        </a>{" "}
+        でモデルの状態を確認できます（開けない場合はアドレスバーに貼り付けてください）。
+      </p>
     </div>
   );
 }
