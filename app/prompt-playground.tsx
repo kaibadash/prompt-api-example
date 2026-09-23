@@ -558,7 +558,7 @@ export default function PromptPlayground({
               disabled={isGenerating}
               className="h-4 w-4 rounded border-zinc-300 text-zinc-900 focus:ring-zinc-900/20 dark:border-zinc-700"
             />
-            生成結果を左の投稿フォームに反映する
+            生成結果を右の投稿フォームに反映する
           </label>
         )}
 
