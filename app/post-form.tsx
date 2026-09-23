@@ -11,13 +11,34 @@ export const CATEGORIES = [
 
 export type CategoryValue = (typeof CATEGORIES)[number]["value"];
 
+export const SUSHI_NETA = [
+  { value: "maguro", label: "まぐろ" },
+  { value: "salmon", label: "サーモン" },
+  { value: "ebi", label: "えび" },
+  { value: "ika", label: "いか" },
+  { value: "tako", label: "たこ" },
+  { value: "hamachi", label: "はまち" },
+  { value: "hotate", label: "ほたて" },
+  { value: "uni", label: "うに" },
+  { value: "ikura", label: "いくら" },
+  { value: "tamago", label: "たまご" },
+] as const;
+
+export type SushiNetaValue = (typeof SUSHI_NETA)[number]["value"];
+
 export type PostFields = {
   name: string;
   category: CategoryValue | "";
   body: string;
+  sushi: SushiNetaValue[];
 };
 
-export const EMPTY_FIELDS: PostFields = { name: "", category: "", body: "" };
+export const EMPTY_FIELDS: PostFields = {
+  name: "",
+  category: "",
+  body: "",
+  sushi: [],
+};
 
 const fieldClass =
   "w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none transition focus:border-zinc-900 focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50 dark:focus:border-zinc-100 dark:focus:ring-zinc-100/10";
@@ -51,6 +72,16 @@ export default function PostForm({ fields, setFields }: PostFormProps) {
     setPreviewUrl(null);
     setFileName(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  function toggleSushi(value: SushiNetaValue) {
+    setFields((prev) => {
+      const current = prev.sushi ?? [];
+      const sushi = current.includes(value)
+        ? current.filter((item) => item !== value)
+        : [...current, value];
+      return { ...prev, sushi };
+    });
   }
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -110,6 +141,32 @@ export default function PostForm({ fields, setFields }: PostFormProps) {
           ))}
         </select>
       </div>
+
+      {/* 好きな寿司ネタ */}
+      <fieldset className="flex flex-col gap-2">
+        <legend className={labelClass}>好きな寿司ネタ</legend>
+        <div className="grid grid-cols-2 gap-2">
+          {SUSHI_NETA.map((neta) => {
+            const checked = (fields.sushi ?? []).includes(neta.value);
+            return (
+              <label
+                key={neta.value}
+                className="flex cursor-pointer items-center gap-2 rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 has-checked:border-zinc-900 has-checked:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50 dark:has-checked:border-zinc-100 dark:has-checked:bg-zinc-800"
+              >
+                <input
+                  type="checkbox"
+                  name="sushi"
+                  value={neta.value}
+                  checked={checked}
+                  onChange={() => toggleSushi(neta.value)}
+                  className="size-4 accent-zinc-900 dark:accent-zinc-100"
+                />
+                {neta.label}
+              </label>
+            );
+          })}
+        </div>
+      </fieldset>
 
       {/* 本文 */}
       <div className="flex flex-col gap-2">
