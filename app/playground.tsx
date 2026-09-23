@@ -14,7 +14,22 @@ export default function Playground() {
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-      {/* 左: 投稿フォーム */}
+      {/* 左: Prompt API デモ */}
+      <div className={cardClass}>
+        <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+          Prompt API デモ
+        </h1>
+        <p className="mt-1 mb-6 text-sm text-zinc-500 dark:text-zinc-400">
+          Chrome の Prompt API（オンデバイス AI）で投稿フォームを操作するテストページです。
+        </p>
+        <PromptPlayground
+          onApplyToForm={(generated) =>
+            setFields((prev) => ({ ...prev, ...generated }))
+          }
+        />
+      </div>
+
+      {/* 右: 投稿フォーム */}
       <div className={cardClass}>
         <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
           投稿フォーム
@@ -23,21 +38,6 @@ export default function Playground() {
           テスト用のフォームです。
         </p>
         <PostForm fields={fields} setFields={setFields} />
-      </div>
-
-      {/* 右: Prompt API デモ */}
-      <div className={cardClass}>
-        <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
-          Prompt API デモ
-        </h1>
-        <p className="mt-1 mb-6 text-sm text-zinc-500 dark:text-zinc-400">
-          Chrome の Prompt API（オンデバイス AI）で投稿フォームを生成できます。
-        </p>
-        <PromptPlayground
-          onApplyToForm={(generated) =>
-            setFields((prev) => ({ ...prev, ...generated }))
-          }
-        />
       </div>
     </div>
   );
